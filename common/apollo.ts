@@ -1,25 +1,22 @@
-import withApollo from 'next-with-apollo';
+import { HttpLink, ApolloLink } from '@apollo/client';
 import {
-  ApolloClient,
-  HttpLink,
-  ApolloLink,
-  ApolloProvider,
-} from '@apollo/client';
-import { getDataFromTree } from '@apollo/client/react/ssr';
-import { InMemoryCache } from '@apollo/client/cache';
+  NextSSRInMemoryCache,
+  NextSSRApolloClient,
+} from '@apollo/experimental-nextjs-app-support/ssr';
 import { onError } from '@apollo/client/link/error';
 import getConfig from 'next/config';
 
 import { captureException, Sentry } from 'common/sentry';
 import { getI18n } from 'common/i18n';
 import possibleTypes from 'common/__generated__/possible_types.json';
+import { NextPageContext } from 'next';
 
 const { publicRuntimeConfig } = getConfig();
 
 const GRAPHQL_ENDPOINT_URI = `${publicRuntimeConfig.aplansApiBaseURL}/graphql/`;
 
-let globalRequestContext;
-let globalPlanIdentifier;
+let globalRequestContext: NextPageContext | undefined;
+let globalPlanIdentifier: string | undefined;
 
 const localeMiddleware = new ApolloLink((operation, forward) => {
   // Inject @locale directive into the query root object
@@ -150,18 +147,22 @@ const httpLink = new HttpLink({
 
 let globalApolloClient;
 
-export function initializeApolloClient(opts) {
-  const { ctx, initialState, planIdentifier } = opts;
+type WatchApolloClientOpts = {
+  planIdentifier?: string;
+  ctx?: NextPageContext;
+};
+
+function _initializeApolloClient(opts: WatchApolloClientOpts) {
+  const { planIdentifier } = opts;
   const isServer = typeof window === 'undefined';
 
   if (planIdentifier) {
     globalPlanIdentifier = planIdentifier;
-  } else if (ctx?.req?.planIdentifier) {
-    globalPlanIdentifier = ctx.req.planIdentifier;
+  } else if (opts.planIdentifier) {
+    globalPlanIdentifier = opts.planIdentifier;
   }
-  if (ctx) globalRequestContext = ctx;
+  if (opts.ctx) globalRequestContext = opts.ctx;
 
-  if (globalApolloClient && !isServer) return globalApolloClient;
   const clientOpts = {
     ssrMode: isServer,
     link: ApolloLink.from([
@@ -172,24 +173,26 @@ export function initializeApolloClient(opts) {
       sentryErrorLink,
       httpLink,
     ]),
-    cache: new InMemoryCache({
+    cache: new NextSSRInMemoryCache({
       // https://www.apollographql.com/docs/react/data/fragments/#defining-possibletypes-manually
       possibleTypes: possibleTypes.possibleTypes,
-    }).restore(initialState || {}),
+    }),
   };
-  const apolloClient = new ApolloClient(clientOpts);
-
-  if (!isServer) globalApolloClient = apolloClient;
+  const apolloClient = new NextSSRApolloClient(clientOpts);
   return apolloClient;
 }
 
-export default withApollo((opts) => initializeApolloClient(opts), {
-  render: ({ Page, props }) => {
-    return (
-      <ApolloProvider client={props.apollo}>
-        <Page {...props} />
-      </ApolloProvider>
-    );
-  },
-  getDataFromTree,
-});
+export function initializeApolloClient(opts: WatchApolloClientOpts) {
+  if (!process.browser) {
+    const {
+      registerApolloClient,
+    } = require('@apollo/experimental-nextjs-app-support/rsc');
+
+    const ret = registerApolloClient(() => {
+      return _initializeApolloClient(opts);
+    });
+    return ret.getClient();
+  } else {
+    return _initializeApolloClient(opts);
+  }
+}

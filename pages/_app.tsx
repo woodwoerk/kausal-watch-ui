@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import App, { AppProps } from 'next/app';
+import App, { AppContext, AppProps } from 'next/app';
 import getConfig from 'next/config';
 import { ApolloProvider, ApolloClient, InMemoryCache } from '@apollo/client';
 import ReactPiwik from 'react-piwik';
@@ -9,10 +9,7 @@ import numbro from 'numbro';
 
 import StatusMessage from 'components/common/StatusMessage';
 import { appWithTranslation } from 'common/i18n';
-import withApollo, {
-  initializeApolloClient,
-  setApolloPlanIdentifier,
-} from 'common/apollo';
+import { initializeApolloClient, setApolloPlanIdentifier } from 'common/apollo';
 import { setBasePath } from 'common/links';
 import { loadTheme } from 'common/theme';
 import { getI18n } from 'common/i18n';
@@ -21,6 +18,13 @@ import PlanContext, { GET_PLAN_CONTEXT, customizePlan } from 'context/plan';
 import SiteContext from 'context/site';
 
 import '@kausal/mapboxgl-legend/dist/style.css';
+import {
+  GetPlanContextQuery,
+  PublicationStatus,
+} from 'common/__generated__/graphql';
+import { ThemeProps } from 'styled-components';
+import { NextPageContext } from 'next';
+import { IncomingMessage } from 'http';
 
 const { publicRuntimeConfig } = getConfig();
 const isServer = typeof window === 'undefined';
@@ -49,34 +53,40 @@ interface SiteContext {
 
 interface GlobalProps {
   siteProps: SiteContext;
-  themeProps: any;
-  plan: any;
+  themeProps: ThemeProps;
+  plan: NonNullable<GetPlanContextQuery['plan']>;
+  unpublished?: boolean;
+  statusMessage?: string;
 }
 
-interface WatchAppProps extends AppProps, GlobalProps {
-  apollo: ApolloClient<InMemoryCache>;
-}
+type WatchAppProps = AppProps &
+  GlobalProps & {
+    apollo?: ApolloClient<InMemoryCache>;
+  };
 
 function WatchApp(props: WatchAppProps) {
   const {
     Component,
     pageProps,
-    apollo,
     siteProps,
     themeProps,
     plan,
     unpublished,
     statusMessage,
   } = props;
+  let { apollo } = props;
 
   const router = useRouter();
   const matomoAnalyticsUrl = plan?.domain?.matomoAnalyticsUrl;
-  let matomoURL, matomoSiteId;
+  let matomoURL: string | null, matomoSiteId: string | null;
 
   if (matomoAnalyticsUrl) {
     [matomoURL, matomoSiteId] = matomoAnalyticsUrl.split('?');
   } else {
     ({ matomoURL, matomoSiteId } = publicRuntimeConfig);
+  }
+  if (!apollo) {
+    apollo = initializeApolloClient({ planIdentifier: plan.identifier });
   }
 
   useEffect(() => {
@@ -84,7 +94,7 @@ function WatchApp(props: WatchAppProps) {
     if (piwik || isServer || !matomoURL || !matomoSiteId) return;
     piwik = new ReactPiwik({
       url: matomoURL,
-      siteId: matomoSiteId,
+      siteId: parseInt(matomoSiteId, 10),
       jsFilename: 'js/',
       phpFilename: 'js/',
     });
@@ -153,10 +163,30 @@ async function getI18nProps(ctx) {
   return i18nConfig;
 }
 
-async function getPlan(ctx) {
+type WatchCurrentURL = {
+  hostname: string;
+  path: string;
+  baseURL: string;
+};
+
+type WatchRequest = IncomingMessage & {
+  planIdentifier: string;
+  currentURL: WatchCurrentURL;
+  publicationStatus?: PublicationStatus;
+  publicationStatusMessage?: string;
+};
+
+type WatchPageContext = NextPageContext & {
+  req: WatchRequest;
+};
+
+type WatchAppContext = AppContext & {
+  ctx: WatchPageContext;
+};
+
+async function getPlan(ctx: WatchPageContext) {
   const apollo = initializeApolloClient({ ctx });
   const planIdentifier = ctx.req.planIdentifier;
-  let plan;
 
   const { data, error } = await apollo.query({
     query: GET_PLAN_CONTEXT,
@@ -167,7 +197,7 @@ async function getPlan(ctx) {
     },
   });
   if (error) throw error;
-  plan = data.plan;
+  const plan = data.plan;
 
   if (!plan) {
     throw new Error(`No plan found for identifier '${planIdentifier}'`);
@@ -186,9 +216,8 @@ function getSiteContext(ctx) {
   };
 }
 
-WatchApp.getInitialProps = async (appContext) => {
+WatchApp.getInitialProps = async (appContext: WatchAppContext) => {
   const { ctx } = appContext;
-  const { req, err } = ctx;
   setBasePath();
   const appProps = await App.getInitialProps(appContext);
 
@@ -237,88 +266,4 @@ WatchApp.getInitialProps = async (appContext) => {
   };
 };
 
-let siteContext;
-
-/*
-
-MemoizedApp.getInitialProps = async (appContext) => {
-  const { ctx } = appContext;
-  const { apolloClient } = ctx;
-
-  const transaction = Sentry.getCurrentHub().getScope().getTransaction();
-  let tracingSpan;
-
-  let globalProps: GlobalProps;
-
-  if (!process.browser) {
-
-    // We pass the request to Apollo so that we can inform the backend about
-    // the refering URL
-    setApolloRequestContext(ctx.req);
-
-    if (transaction) {
-      tracingSpan = transaction.startChild({
-        op: 'getPlan',
-      })
-    }
-
-    let plan;
-    try {
-      plan = await getPlan(ctx);
-    } catch (error) {
-      captureException(error, ctx);
-      if (ctx.res) {
-        ctx.res.statusCode = 500;
-      }
-      throw error;
-    }
-
-    if (tracingSpan) tracingSpan.finish();
-
-    globalProps = {
-      plan,
-      siteContext,
-    }
-  } else {
-    // @ts-ignore
-    const { siteContext, plan, themeProps } = window.__NEXT_DATA__.props;
-    globalProps = {
-      plan,
-      themeProps: theme,
-      siteContext,
-    }
-  }
-
-  configureI18nFromPlan(globalProps.plan);
-  setApolloPlanIdentifier(globalProps.plan.identifier);
-  Sentry.setTag("plan", globalProps.plan.identifier);
-
-  const appProps = await TransApp.getInitialProps(appContext);
-  if (tracingSpan) tracingSpan.finish();
-
-  return {...appProps, ...globalProps};
-};
-
-// appWithTranslation is not a pure component, so it re-renders much too often.
-// We only use its getInitialProps() but do not render it.
-const ApolloApp = withApollo(appWithTranslation(WatchApp));
-const getInitialPropsApollo = ApolloApp.getInitialProps
-
-ApolloApp.getInitialProps = async (appContext) => {
-  const transaction = Sentry.getCurrentHub().getScope().getTransaction();
-  let tracingSpan;
-
-  if (transaction) {
-    tracingSpan = transaction.startChild({
-      op: 'getInitialProps',
-    })
-  }
-  const appProps = await getInitialPropsApollo(appContext);
-  if (tracingSpan) tracingSpan.finish();
-  return appProps;
-};
-
-const ProfiledApp = Sentry.withProfiler(ApolloApp);
-*/
-
-export default withApollo(appWithTranslation(WatchApp));
+export default appWithTranslation(WatchApp);

@@ -58,11 +58,9 @@ let config = {
     styledComponents: true,
   },
   swcMinify: true,
-  experimental: {
-    modularizeImports: {
-      lodash: {
-        transform: 'lodash/{{member}}',
-      },
+  modularizeImports: {
+    lodash: {
+      transform: 'lodash/{{member}}',
     },
   },
   async rewrites() {

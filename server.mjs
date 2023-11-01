@@ -7,7 +7,7 @@ import originalUrl from 'original-url';
 //import cacheableResponse from 'cacheable-response';
 //import parseCacheControl from '@tusbar/cache-control';
 //import normalizeUrl from 'normalize-url';
-import LRU from 'lru-cache';
+import { LRUCache } from 'lru-cache';
 import apollo from '@apollo/client';
 import 'dotenv/config';
 import next from 'next';
@@ -123,7 +123,7 @@ class WatchServer {
     this.nextConfig = null;
     this.app = next({ dev: isDevMode });
     this.nextHandleRequest = this.app.getRequestHandler();
-    this.hostnameCache = new LRU({
+    this.hostnameCache = new LRUCache({
       max: 500,
       ttl: 1 * 60 * 1000,
     });
@@ -237,9 +237,9 @@ class WatchServer {
     srv.nextConfig.publicRuntimeConfig.basePath = basePath;
     srv.renderOpts.basePath = basePath;
     srv.renderOpts.canonicalBase = basePath;
-    srv.renderOpts.runtimeConfig.basePath = basePath;
+    //srv.renderOpts.runtimeConfig.basePath = basePath;
     srv.renderOpts.assetPrefix = basePath;
-    srv.router.basePath = basePath;
+    //srv.router.basePath = basePath;
   }
 
   setLocale(locale, defaultLocale, locales) {
@@ -249,9 +249,9 @@ class WatchServer {
     loc.splice(0, 0, defaultLocale);
     srv.nextConfig.i18n.defaultLocale = defaultLocale;
     srv.nextConfig.i18n.locales = loc;
-    srv.nextConfig.publicRuntimeConfig.locale = locale;
-    srv.router.locales = loc;
-    srv.incrementalCache.locales = loc;
+    srv.localeNormalizer.locales = loc;
+    srv.localeNormalizer.defaultLocale = defaultLocale;
+    srv.localeNormalizer.lowerCase = loc.map((l) => l.toLowerCase());
   }
 
   validateCredentials(ctx) {
@@ -353,12 +353,14 @@ class WatchServer {
     server.on('error', (err, ctx) => {
       // Do not report HTTP 404s to Sentry
       if (err.statusCode && err.statusCode === 404) return;
+      /*
       Sentry.withScope((scope) => {
         scope.addEventProcessor((event) =>
           Sentry.Handlers.parseRequest(event, ctx.request)
         );
         Sentry.captureException(err);
       });
+      */
       console.error(err);
     });
     server.listen(serverPort, () => {
